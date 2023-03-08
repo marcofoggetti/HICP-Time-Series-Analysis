@@ -1,0 +1,415 @@
+---
+title: "The Italian Harmonised Index of Consumer Prices (HICP): a Time Series analysis (1997-2023)"
+output:
+  html_document:
+    toc: TRUE
+    theme:
+      bootswatch: lumen
+    df_print: paged
+  word_document: default
+---
+
+
+## Measuring Inflation - The Harmonised Index of Consumer Prices (HICP)
+
+In the euro area, the key measure of the rate of **inflation** is the **Harmonized Index of Consumer Prices.** This index is compiled based on data from the national central banks by Eurostat, a Directorate-General of the European Comission responsible for providing statistical information to the European institutions.
+
+Ensuring *price stability* in the euro area is one of the main responsibilities of the **European Central Bank** (ECB) and the national central banks. ECB aims to keep the annual rate of inflation below but close to 2% in the medium term
+
+This report aims to analyse inflation in **Italy** by analyzing the time series of the harmonised consumer price index, from now on referred to as HICP for brevity.
+
+The aim of this analysis is to fit an ARIMA model, with seasonal components, to HICP. While this model might provide some insides about the inflation rate on its own, it can also be used for forecasting purposes.
+
+## Preliminary Analysis
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+#Let's import the necessary libraries first.
+library(TSA)
+library(stats)
+library(ecb)
+library(dplyr)
+library(xts)
+library(ggplot2)
+library(forecast)
+```
+
+The data comes from the ECB's "Statistical Data Warehouse" and it is accessed via the R package 'ecb' with code ICP.M.IT.N.000000.4.INX. As already mentioned, the dataset contains monthly observations about the Italian HICP starting from January 1997 to January 2023 counting 313 values.
+
+```{r}
+key <- "ICP.M.IT.N.000000.4.INX"
+filter = list(startPeriod = "1997-01", endPeriod = "2023-01")
+hicp = get_data(key = key, filter = filter)
+x = ts(as.numeric(hicp$obsvalue), start = 1997, end = 2023, frequency = 12)
+n = length(x)
+plot(as.xts(x), main = "Harmonized Index of Consumer Prices Index", type = "l")
+```
+
+Based on the plot above, it is evident that a positive **linear trend** is observed, and as recent observations are approached, there is an increase in variance. Additionally, the presence of **seasonality** can be detected, which is consistent with the characteristics of an economic time series such is the one under analysis.
+
+In order to better understand our data, consider the plot of the autocorrelation function (ACF) and partial autocorrelation function (PACF)
+
+```{r}
+stats::acf(as.numeric(x), lag.max = 60, main = "ACF of Italian HICP")
+stats::pacf(as.numeric(x), lag.max = 60, main = "Partial ACF of Italian HICP")
+```
+
+The results of the autocorrelation function (ACF) and partial autocorrelation function (PACF) analyses suggest indeed, as expected, that the time series is characterized by a notable linear trend. Specifically, the ACF plot indicates a gradual decrease in positive autocorrelations over increasing lags, while the PACF plot exhibits a significant positive correlation at lag 1 followed by a sharp decrease at higher lags, which is a characteristic pattern of a time series with a linear trend.
+
+### Removing the influence of Linear Trends on Data
+
+In order to remove the trend and achieve a smoother time series, a **logarithmic transformation** to the data is applied followed by a **first-order difference** on the log-transformed series.
+
+```{r}
+diff.log.x = diff(log(x))
+plot(as.xts(diff.log.x), type = "l", main = "First Order Difference on the log-transformed HICPs")
+```
+
+The application of the logarithmic transformation followed by the first-order differentiation on the time series was effective in eliminating the positive trend in the data. Nevertheless, the presence of seasonal patterns may still be present. Therefore, the examination of the autocorrelation function (ACF) and partial autocorrelation function (PACF) of the transformed data will be proceeded with.
+
+```{r}
+acf(as.numeric(diff.log.x), lag.max = 60, main = "ACF of First order Difference on log transformed HICP" )
+pacf(as.numeric(diff.log.x ), lag.max = 60, main = "PACF of First order Difference on log transformed HICP")
+```
+
+The autocorrelation function (ACF) plot provides additional evidence to support the presence of seasonality in the data. The plot shows clear spikes at multiple of lag 6, which are especially pronounced at multiples of lag 12, with a relative slow decay in the autocorrelations. This annual pattern suggest the presence of a seasonal component in the data.
+
+Furthermore, the time series does not exhibit stationarity, as evidenced by the observed increase in variability over time, particularly from around 2013/2014. Therefore, additional transformations are required to achieve stationarity before fitting a SARIMA model. To address the seasonality, it is recommended that a further differentiation with lag 12 has to be considered.
+
+### Removing the influence of Seasonality on Data with Seasonal Differentiation
+
+Aiming to remove seasonality on the data a **seasonal difference** with order $s=12$ is applied on the log-trasnformed data.
+
+```{r}
+diff12.log.x = diff(log(x), lag = 12)
+plot(as.xts(diff12.log.x), type = "l", main = "Seasonal Differentiation on the log-transformed HICPs")
+```
+
+```{r}
+acf(as.numeric(diff12.log.x), lag.max = 60, main = "ACF of Seasonal Differenced log-transformed series")
+pacf(as.numeric(diff12.log.x), lag.max = 60, main = "PACF of Seasonal Differenced log-transformed series")
+```
+
+Seasonal differencing may have removed the seasonality from the time series. The ACF still shows slow decay indicating some autocorrelation in the data, due to the presence of a linear trend as already mentioned.
+
+Furthermore the time series may also exhibit long-term dependence: the slow tail-off of the ACF after seasonal differencing could suggest long-term dependence, meaning that past values of the series are highly correlated with future values, even after accounting for any seasonality in the data, which is due to the presence a trend in the data.
+
+###Seasonal Differentiation on the First Order Differenced log-transformed Series Hence, to account for both trend and seasonality, the resulting time series is obtained as the log-transformed raw time series twice differenced, first with lag 1 and then lag 12.
+
+```{r}
+diff12.diff.log.x = diff(diff.log.x , lag = 12)
+plot(as.xts(diff12.diff.log.x), type = "l", main = "Twice differenced log-transformed HICP")
+```
+
+The resulting time series now appears to be reasonably stationary so that a sarima model might be fitted.
+
+```{r}
+val_x = seq(0,5,0.5)*12
+stats::acf(as.numeric(diff12.diff.log.x), lag.max = 60, main = "ACF of the twice differenced HICP", xaxt = "n")
+axis(1, val_x, val_x)
+stats::pacf(as.numeric(diff12.diff.log.x), lag.max = 60, main = "PACF of the twice differenced HICP", xaxt = "n")
+axis(1, val_x, val_x)
+```
+
+Just looking at the seasonal lags $h = 1s, 2s, 3s, ...$ where $s=12$ it can be noticed that the acf cuts off after a strong peak at \$ h=1s\$ indicating that the seasonal part may be modeled with a Seasonal Moving Average process of order 1.
+
+On the other hand, the non seasonal part does not show any particular behaviour. Therefore the best model will be chosen through criterion model selection using both the AIC and the BIC criteria, assuming moreover the normality of the errors, which will be discussed in the following sections.
+
+## Model Specification
+
+In order to assess the goodness of fit of our models, statistical measures such as the **Akaike Information Criterion** (AIC) and **Bayesian Information Criterion** (BIC) are used. To facilitate the process, a function that computes the AIC and BIC for various model specifications is implemented. Specifically, the seasonal moving average term (SMA) of order $s=12$ is kept constant, while the orders of the non-seasonal component are left varying.
+
+Below are a table and plots summarizing the results, allowing to identify the model with the lowest values of these information criteria as the preferred choice.
+
+```{r message=FALSE, warning=FALSE}
+x.ma = log(x) - mean(log(x))  #Standardizing to get mean adjusted time series
+
+P <- 4
+Q <- 4
+results <- as.data.frame(matrix(NA, nrow = (P+1) * (Q+1), ncol = 2))
+colnames(results) = c("AIC", "BIC")
+index = 1
+
+for (p  in 0:P) {
+  for(q in 0:Q){
+    results[index, 1] = arima(x.ma, order = c(p,0,q), seasonal = list(order = c(0,1,1), 
+                               period = 12), method = "ML")$aic
+    results[index,2] = BIC(arima(x.ma, order = c(p,0,q), 
+                              seasonal = list(order = c(0,1,1), period = 12), method = "ML"))
+    
+    rownames(results)[index] = paste("SARIMA(", p, ",1,", q, ")","x(0,1,1)", sep = "")
+    index = index + 1
+  }
+}
+
+knitr::kable(results)
+```
+
+```{r message=FALSE, warning=FALSE}
+ggplot(results, aes(x = rownames(results), y = AIC)) +
+  geom_point() +
+  xlab("SARIMA Model") +
+  ylab("AIC") +
+  ggtitle("AIC values for different SARIMA models") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+```{r message=FALSE, warning=FALSE}
+ggplot(results, aes(x = rownames(results), y = BIC)) +
+  geom_point() +
+  geom_line() +
+  xlab("SARIMA Model") +
+  ylab("BIC") +
+  ggtitle("BIC values for different SARIMA models") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+Several candidate models possess low values of both AIC and BIC: among them, the model that is the simplest in terms of its structure and parameters, while still adequately fitting the data is: $$SARIMA(1,1,0)X(0,1,1)_{12}$$ In terms of Backshift Notation, the model could be expressed as: $$(1-\phi_1B)(1-B)(1-B^{12})log(x_t) = (1 + \theta_{12}B^{12})w_t$$
+
+where:
+
+-   $B$ is the backshift operator, such that $B^k x_t = x_{t-k}$
+
+-   $\phi_1$ is the autoregressive parameter for the non-seasonal component of the model
+
+-   $\theta_{12}$ is the moving average parameter for the seasonal component of the model
+
+-   $w_t$ is a white noise with zero mean and constant variance $w_t \sim WN(0,\sigma^2_w)$
+
+-   The $(1-B)(1-B^{12})$ term on the left-hand side of the equation represents the differencing of the non-seasonal and seasonal components of the ARIMA model as we are applying a first order difference and a seasonal difference with $s=12$ on the log-transformed series.
+
+## Model Estimation
+
+```{r}
+f = arima(x.ma, order = c(1,1,0), seasonal = list(order = c(0,1,1), period = 12), method = "ML")
+coefs = f$coef
+ar1 = coefs[1]
+sma1 = coefs[2]
+coefs
+```
+
+In the given model estimation, the ARIMA model is estimated on the mean adjusted log-trasnformed time series data using the *maximum likelihood estimation* method.
+
+The method seeks to maximize the likelihood function, which is the probability of observing the given data for a given set of parameter values.
+
+The obtained estimates of the parameters are the following:
+
+-   $\phi_1 = 0.114$
+
+-   $\theta_{12} = -0.306$
+
+## Model Diagnostic
+
+The assumptions behind the maximum likelihood estimation of a Seasonal ARIMA model are:
+
+-   The errors in the model are **normally distributed**: The maximum likelihood estimation assumes that the errors in the SARIMA model follow a normal distribution. If the errors are not normally distributed, then the maximum likelihood estimates may not be optimal.
+
+-   The errors in the model are **independent** and **identically distributed**: The maximum likelihood estimation assumes that the errors in the SARIMA model are independent and identically distributed $i.i.d.$ with $0$ mean and $\sigma^2_w$ variance.
+
+Moreover, If the errors are both uncorrelated and normally distributed, then it can be inferred that they are also independent.
+
+### Analysis of the Variance of the Residuals
+
+When the residuals are identically distributed over time, the statistical model is properly capturing the underlying patterns and trends in the data, and the residuals are not influenced by any particular time points or trends in the time series.
+
+If the residuals are not identically distributed over time, statistical inferences, such as hypothesis tests or confidence intervals, may be biased or incorrect, and predictions made using the model may not be reliable.
+
+```{r}
+res = f$residuals
+plot(res, type = "p", main = "Residuals vs Time")
+abline(h = mean(res), col = "red", lwd = 2, lty = 2)
+```
+
+The temporal scatterplot of the residuals displays a rectangular distribution around the horizontal zero line (mean), indicating a lack of discernible pattern in the variability of the residuals with respect to time. As such, there is no evidence of heteroscedasticity in the model with the exception of a few outliers in the years 2020-2023.
+
+The observed peak in inflation during this period can likely be attributed to exogenous factors such as the Covid-19 pandemic and the War between Russia and Ukraine, both of which have had significant impacts on the global economy.
+
+### Investigating Residual Normality
+
+To verify the assumption of normality, several graphical and statistical methods can be employed, including the construction of histograms, QQ-plots, and box-plots, as well as the use of Normality tests such as the Shapiro-Wilk Normality Test.
+
+```{r}
+hist(res,main="Histogram of the residuals",xlab="",freq=F, xlim=c(-0.020,0.020),breaks=30)
+lines(density(res),col="blue",lwd=3)
+
+zz=seq(-0.025,0.025,length=200)
+f.zz=dnorm(zz, mean(res),sd(res))
+lines(zz,f.zz,col="red",lwd=2)
+
+qqnorm(res)
+qqline(res)
+```
+
+Both the histogram and the Q-Q plot of the residuals shows departure from normality at the tails due to the presence of the outliers mentioned before.
+
+Overall, the residuals behave well except for the fact that a distribution with heavier tails than normal distribution might be employed to get better results.
+
+Below we plot the p-value of the Shapiro-Wilk Normality test that, as expected, lead to the conclusion of not accepting the null hypothesis of Normality of errors.
+
+```{r}
+shapiro.test(res)
+```
+
+### Independence of residuals
+
+In order to check this assumption the Autocorrelation function (ACF) and partial autocorrelation function (PACF) plots are used.
+
+```{r}
+stats::acf(as.numeric(res), lag.max = 60, main = "ACF of the residuals")
+stats::pacf(as.numeric(res), lag.max = 60, main = "PACF of the residuals")
+```
+
+As shown in the plots above, residuals are uncorrelated: the ACF and PACF plots show no significant correlations beyond the first lag except for a small amount of correlation that still remains, although not at seasonal lags.
+
+## Model Fitting
+
+```{r}
+log.x.fit = x.ma - res
+invisible(plot(as.xts(x), type = "p", main = "Observed vs Fitted", pch = "*"))
+lines(as.xts(exp(log.x.fit+mean(log(x)))), type = "l", col = 2, lwd = 2)
+```
+
+Finally, the visualization of the 'observed vs fitted' values suggests that the fitted values provide a good representation of the observed data. Therefore that the model is able to accurately capture the underlying patterns and relationships in the data, and that the model's predictions closely match the actual data.
+
+Overall, the goodness of fit between the observed and fitted values suggests that the model is reliable for making predictions.
+
+## Forecasting
+
+The aim of this section is to make predictions of the level of the HICP for Italy up to 2028 using the estimated SARIMA model.
+
+As already mentioned the last 3 years have been strongly influenced by exogenous factor, causing a sharp increase in the level of inflation.
+
+Thus, it may be worthwhile to consider generating predictions for 2028 using starting points of both 2023 and 2020 to make comparisons.
+
+### Forecasting from 2023
+
+Below is a plot of the predicted values together with the confidence prediction intervals at 95%.
+
+```{r message=FALSE, warning=FALSE}
+nf = 60 #number of forecasts 
+x.for = forecast::forecast(f, h = nf)
+
+# Create data frame for plotting
+df <- data.frame(
+  year = seq(1997, 2028, length = 373),
+  actual = c(x, rep(NA, nf)),
+  lower = c(rep(NA,n),exp(x.for$lower[, 2] + mean(log(x)))),
+  forecast = c(rep(NA,n),exp(x.for$mean + mean(log(x)))),
+  upper = c(rep(NA, n),exp(x.for$upper[, 2] + mean(log(x))))
+)
+
+ggplot(df, aes(x = year)) +
+  geom_line(aes(y = actual), color = "gray30", size = 1) +
+  geom_ribbon(aes(ymin = lower, ymax = upper), fill = "#ADD8E6", alpha = 0.8) +
+  geom_line(aes(y = forecast), color = "blue", size = 1.2) +
+  geom_vline(xintercept = 2023, linetype = "dashed", color = "red")+
+  scale_x_continuous(limits = c(2015, 2028), breaks = seq(2010, 2028, 1)) +
+  scale_y_continuous(limits = c(90, 215), breaks = seq(90, 250, 10)) +
+  labs(x = "Year", y = "HICP", title = "HICP Predictions from 2023 to 2028") +
+  theme_minimal() 
+
+```
+
+The forecasts exhibit a strong dependency on the previous year's observations, while adhering to the annual seasonality and a more pronounced linear trend than the trend observed in the series between 1997 and 2020.
+
+This outcome is unsurprising, given that the forecasts are conditional expectations on the observed data and, the forecasting model assigns greater weight to more recent observations, given that the coefficient of the autoregressive part is $<1$.
+
+### Forecasting from 2020
+
+The model is re-estimated without considering the observations from 2020 to 2023.
+
+```{r}
+key <- "ICP.M.IT.N.000000.4.INX"
+filter = list(startPeriod = "1997-01", endPeriod = "2020-01")
+hicp_2 = get_data(key = key, filter = filter)
+x_2 = ts(as.numeric(hicp_2$obsvalue), start = 1997, frequency = 12)
+n_2 = length(x_2)
+x_2.ma = log(x_2) - mean(log(x_2))
+g = arima(x_2.ma, order = c(1,1,0), seasonal = list(order = c(0,1,1), period = 12), method = "ML")
+g$coef
+```
+
+The new coefficients are now:
+
+-   $\phi_1 = 0.0007$
+
+-   $\theta_{12} = -0.314$
+
+#### Comparison with the Observed Values from 2020 to 2023
+
+As anticipated, the series experienced a significant increase in trend during 2020.
+
+```{r message=FALSE, warning=FALSE}
+
+nf2 = 36 #number of forecasts to reach 2023
+x_2.for = forecast::forecast(g, nf2)
+# Create data frame for plotting
+df2 <- data.frame(
+  year = seq(1997, 2023, length = 313),
+  actual_2 = x,
+  lower_2 = c(rep(NA,n_2),exp(x_2.for$lower[, 2] + mean(log(x_2)))),
+  forecast_2 = c(rep(NA,n_2),exp(x_2.for$mean + mean(log(x_2)))),
+  upper_2 = c(rep(NA, n_2),exp(x_2.for$upper[, 2] + mean(log(x_2))))
+)
+
+ggplot(df2, aes(x = year)) +
+  geom_line(aes(y = actual_2), color = "gray30", size = 1) +
+  geom_ribbon(aes(ymin = lower_2, ymax = upper_2), fill = "#FFFFCC", alpha = 0.6) +
+  geom_line(aes(y = forecast_2), color = "#FF9933", size = 1.2) +
+  geom_vline(xintercept = 2020, linetype = "dashed", color = "red")+
+  scale_x_continuous(limits = c(2010, 2023), breaks = seq(2010, 2023, 1)) +
+  scale_y_continuous(limits = c(90, 215), breaks = seq(90, 250, 10)) +
+  labs(x = "Year", y = "HICP", title = "HICP Prediction from 2020 to 2023", subtitle = "Comparison with the observed values") +
+  theme_minimal()
+
+```
+
+#### Final comparison
+
+Enhancing the predictions to 2028 the outcome is even clearer: Inflation has experienced a notable increase since 2020 and it may continue to rise.
+
+However, the underlying factors driving inflation are complex and may require a careful analysis of the current economic conditions and trends. Policymakers will need to carefully consider the appropriate measures to mitigate the impact of inflation and support economic recovery in the short and long term.
+
+```{r message=FALSE, warning=FALSE}
+x_2.for20_28 = forecast::forecast(g, h = nf + nf2) #nf2 to reach 2023 and nf to reach 2028
+
+#Create data frame for plotting
+df_for20_28 = data.frame(
+  year = seq(1997, 2028, length = 373),
+  actual = c(x, rep(NA, nf)),
+  lower.for20_28 = c(rep(NA, n_2),exp(x_2.for20_28$lower[, 2] + mean(log(x_2)))),
+  forecast20_28 = c(rep(NA, n_2),exp(x_2.for20_28$mean + mean(log(x_2)))),
+  upper.for20_28 = c(rep(NA, n_2),exp(x_2.for20_28$upper[, 2] + mean(log(x_2))))
+)
+
+df_for23_28 = df
+colnames(df_for23_28) = c("year", "actual", "lower.for23_28", "forecast23_28", "upper.for23_28")
+
+for_data = merge.data.frame(df_for20_28, df_for23_28)
+
+
+ggplot(for_data, aes(x = year)) +
+  geom_line(aes(y = actual), color = "gray30", size = 1) +
+  geom_ribbon(aes(ymin = lower.for23_28, ymax = upper.for23_28), fill = "#ADD8E6", alpha = 0.6) +
+  geom_line(aes(y = forecast23_28), color = "blue", size = 1) +
+  geom_vline(xintercept = 2023, linetype = "dashed", color = "red")+
+  geom_vline(xintercept = 2020, linetype = "dashed", color = "red")+
+  
+  geom_ribbon(aes(ymin = lower.for20_28, ymax = upper.for20_28), fill = "#FFFFCC", alpha = 0.6) + geom_line(aes(y = forecast20_28), color = "#FF9933", size = 1) +
+  
+  
+  scale_x_continuous(limits = c(2015, 2028), breaks = seq(2010, 2028, 1)) +
+  scale_y_continuous(limits = c(85, 215), breaks = seq(90, 250, 10)) +
+  
+  labs(x = "Year", y = "HICP", title = "ITALIAN HICP PREDICTION", 
+       subtitle = "Predicting from 2020 and from 2023") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5),
+        
+        axis.text = element_text(size = 9),
+        axis.title = element_text(size = 8))
+
+```
